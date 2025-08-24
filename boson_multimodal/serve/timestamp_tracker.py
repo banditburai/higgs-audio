@@ -64,6 +64,7 @@ class GenerationTimestampTracker(LogitsProcessor):
             self.current_position = 0
             self.is_audio_phase = False
             self.audio_start_position = None
+            self.debug_token_count = 0  # Reset debug counter
     
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         """
@@ -122,12 +123,25 @@ class GenerationTimestampTracker(LogitsProcessor):
     def _is_audio_token(self, token_id: int) -> bool:
         """
         Determine if a token is an audio token.
-        Audio tokens typically have IDs above the text vocabulary size.
+        For Higgs Audio, we need to understand the token structure better.
+        Initially, let's assume ALL tokens after a certain position are audio.
         """
-        # This threshold needs to be calibrated for Higgs Audio
-        # Text tokens are typically 0-50000, audio tokens are higher
-        TEXT_VOCAB_SIZE = 50000  # Approximate, needs verification
-        return token_id > TEXT_VOCAB_SIZE
+        # First, let's debug what we're seeing
+        if hasattr(self, 'debug_token_count'):
+            self.debug_token_count += 1
+        else:
+            self.debug_token_count = 1
+            
+        # For now, let's assume the first 50 tokens are text, rest are audio
+        # This is a rough heuristic we'll refine based on debug output
+        if self.debug_token_count <= 50:
+            return False  # Assume early tokens are text
+        else:
+            return True   # Assume later tokens are audio
+        
+        # Alternative approach: use token ID ranges (disabled for now)
+        # TEXT_VOCAB_SIZE = 50000  # Approximate, needs verification
+        # return token_id > TEXT_VOCAB_SIZE
     
     def get_word_timings(self, text: str, audio_duration_ms: float) -> List[WordTiming]:
         """
@@ -161,7 +175,24 @@ class GenerationTimestampTracker(LogitsProcessor):
                 if self.generations:
                     logger.warning(f"All token IDs: {[g.token_id for g in self.generations]}")
                     logger.warning(f"All is_audio flags: {[g.is_audio for g in self.generations]}")
-                return []
+                
+                # Fallback: create simple word timings based on text alone
+                logger.info("Using fallback word timing generation")
+                words = text.strip().split()
+                if not words:
+                    return []
+                    
+                ms_per_word = audio_duration_ms / len(words)
+                word_timings = []
+                for i, word in enumerate(words):
+                    word_timings.append(WordTiming(
+                        word=word,
+                        start_ms=int(i * ms_per_word),
+                        end_ms=int((i + 1) * ms_per_word),
+                        confidence=0.3,  # Low confidence for fallback
+                        token_ids=[]
+                    ))
+                return word_timings
             
             # Decode text tokens to get words
             text_token_ids = [g.token_id for g in text_gens]

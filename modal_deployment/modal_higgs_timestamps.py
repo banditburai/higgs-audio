@@ -67,12 +67,17 @@ image = (
         
         # For timestamp testing
         "openai-whisper",
+        
+        # Force cache invalidation (2025-08-24-17:45)
+        "requests==2.32.5",
     )
     .run_commands(
-        # Clone YOUR FORK with timestamp tracking
+        # Clone YOUR FORK with timestamp tracking (force rebuild 2025-08-24-17:45)  
         "git clone https://github.com/banditburai/higgs-audio.git /app/higgs-audio",
         "cd /app/higgs-audio && git checkout timestamp-tracking || true",  # Use timestamp branch if it exists
+        "cd /app/higgs-audio && git pull origin timestamp-tracking",  # Force pull latest changes
         "cd /app/higgs-audio && pip install -e .",
+        force_build=True
     )
     .env({"HF_HOME": "/cache/huggingface", "TRANSFORMERS_CACHE": "/cache/transformers"})
 )
@@ -116,9 +121,9 @@ def higgs_tts_api_timestamps():
     if os.getenv('HUGGINGFACE_TOKEN'):
         os.environ['HF_TOKEN'] = os.getenv('HUGGINGFACE_TOKEN')
     
-    # Import our production timestamp tracking directly
-    from boson_multimodal.serve.timestamp_tracker import (
-        create_enhanced_engine_with_tracking,
+    # Import our simplified timestamp tracking (v2)
+    from boson_multimodal.serve.timestamp_tracker_v2 import (
+        create_simple_tracking_engine,
         WordTiming
     )
     from boson_multimodal.data_types import ChatMLSample, Message, AudioContent
@@ -138,16 +143,15 @@ def higgs_tts_api_timestamps():
             device = "cuda" if torch.cuda.is_available() else "cpu"
             print(f"Using device: {device}")
             
-            # Initialize enhanced engine with production tracking
-            engine, gen_tracker, attn_tracker = create_enhanced_engine_with_tracking(
+            # Initialize simplified engine with timestamp tracking v2
+            engine, tracker = create_simple_tracking_engine(
                 model_name_or_path=config['model_name'],
-                audio_tokenizer_name_or_path=config['model_name'],
+                audio_tokenizer_name_or_path='bosonai/higgs-audio-v2-tokenizer',  # Use separate tokenizer like working version
                 device=device
             )
             get_serve_engine.engine = engine
-            get_serve_engine.generation_tracker = gen_tracker
-            get_serve_engine.attention_tracker = attn_tracker
-            print("Production engine initialized with timestamp tracking!")
+            get_serve_engine.tracker = tracker
+            print("Engine initialized with simplified timestamp tracking (v2)!")
         
         return get_serve_engine.engine
     
@@ -356,16 +360,14 @@ def test_timestamp_system():
     sys.path.insert(0, '/app/higgs-audio')
     
     try:
-        from boson_multimodal.serve import (
-            create_enhanced_engine_with_tracking,
-            GenerationTimestampTracker,
-            CrossAttentionTracker,
+        from boson_multimodal.serve.timestamp_tracker_v2 import (
+            create_simple_tracking_engine,
+            SimpleTimestampTracker,
             WordTiming
         )
-        print("✅ Production timestamp system imported successfully!")
-        print(f"  - create_enhanced_engine_with_tracking: {create_enhanced_engine_with_tracking}")
-        print(f"  - GenerationTimestampTracker: {GenerationTimestampTracker}")
-        print(f"  - CrossAttentionTracker: {CrossAttentionTracker}")
+        print("✅ Simplified timestamp system (v2) imported successfully!")
+        print(f"  - create_simple_tracking_engine: {create_simple_tracking_engine}")
+        print(f"  - SimpleTimestampTracker: {SimpleTimestampTracker}")
         print(f"  - WordTiming: {WordTiming}")
         return True
     except Exception as e:
