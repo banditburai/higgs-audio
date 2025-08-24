@@ -134,20 +134,62 @@ def create_simple_tracking_engine(
     # Wrap the engine's generate method to extract timestamps
     original_generate = engine.generate
     
-    def generate_with_tracking(*args, return_timestamps=False, **kwargs):
+    def generate_with_tracking(*args, return_timestamps=False, input_text=None, **kwargs):
+        # Log the input
+        logger.info(f"=== TIMESTAMP TRACKING DEBUG ===")
+        logger.info(f"return_timestamps: {return_timestamps}")
+        logger.info(f"input_text provided: {input_text}")
+        
+        # Extract input text from ChatMLSample if available
+        if not input_text and len(args) > 0:
+            # First arg should be chat_ml_sample
+            chat_ml_sample = args[0]
+            if hasattr(chat_ml_sample, 'messages'):
+                # Find the last user message
+                for msg in reversed(chat_ml_sample.messages):
+                    if hasattr(msg, 'role') and msg.role == 'user' and hasattr(msg, 'content'):
+                        if isinstance(msg.content, str):
+                            input_text = msg.content
+                            logger.info(f"Extracted input text from messages: '{input_text}'")
+                            break
+        
         # Call original generate
         result = original_generate(*args, **kwargs)
+        
+        # Log what we got back
+        logger.info(f"Result type: {type(result)}")
+        logger.info(f"Result attributes: {dir(result)}")
+        logger.info(f"Has audio: {hasattr(result, 'audio') and result.audio is not None}")
+        if hasattr(result, 'generated_text'):
+            logger.info(f"Generated text: '{result.generated_text}'")
+        if hasattr(result, 'generated_text_tokens'):
+            logger.info(f"Generated text tokens shape: {result.generated_text_tokens.shape if hasattr(result.generated_text_tokens, 'shape') else 'no shape'}")
+            logger.info(f"Generated text tokens sample: {result.generated_text_tokens[:10] if hasattr(result.generated_text_tokens, '__getitem__') else 'cannot index'}")
+        if hasattr(result, 'generated_audio_tokens'):
+            logger.info(f"Generated audio tokens shape: {result.generated_audio_tokens.shape if hasattr(result.generated_audio_tokens, 'shape') else 'no shape'}")
         
         # Extract timestamps if requested
         if return_timestamps and hasattr(result, 'audio') and result.audio is not None:
             # Calculate audio duration
             duration_ms = len(result.audio) / result.sampling_rate * 1000
+            logger.info(f"Audio duration: {duration_ms}ms")
+            
+            # Determine which text to use
+            text_to_use = result.generated_text if hasattr(result, 'generated_text') else ""
+            
+            # Check if generated text is only special tokens
+            special_tokens = ['<|audio_out_bos|>', '<|AUDIO_OUT|>', '<|audio_eos|>', '<|eot_id|>']
+            is_only_special = all(token in text_to_use for token in special_tokens) or not text_to_use.replace(''.join(special_tokens), '').strip()
+            
+            if is_only_special and input_text:
+                logger.info(f"Generated text has only special tokens, using input text: '{input_text}'")
+                text_to_use = input_text
             
             # Extract word timings using our simple approach
             word_timings = tracker.extract_word_timings(
-                text=result.generated_text,
-                text_tokens=result.generated_text_tokens,
-                audio_tokens=result.generated_audio_tokens,
+                text=text_to_use,
+                text_tokens=result.generated_text_tokens if hasattr(result, 'generated_text_tokens') else None,
+                audio_tokens=result.generated_audio_tokens if hasattr(result, 'generated_audio_tokens') else None,
                 audio_duration_ms=duration_ms
             )
             
@@ -155,7 +197,11 @@ def create_simple_tracking_engine(
             result.word_timings = word_timings
             result.alignment_method = "simple_distribution"
             
-            logger.info(f"Added {len(word_timings)} word timings to result")
+            logger.info(f"Added {len(word_timings) if word_timings else 0} word timings to result")
+            if word_timings:
+                logger.info(f"Sample word timing: {word_timings[0]}")
+        else:
+            logger.info(f"Not adding timestamps. return_timestamps={return_timestamps}, has_audio={hasattr(result, 'audio')}")
         
         return result
     

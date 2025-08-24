@@ -242,7 +242,11 @@ def higgs_tts_api_timestamps():
             
             # Generate audio with timestamps if requested
             if request.return_timestamps:
+                print(f"=== MODAL ENDPOINT DEBUG ===")
+                print(f"Input text: '{request.text}'")
+                print(f"Voice: {request.voice}")
                 print("Using production tracking for timestamps...")
+                
                 output = engine.generate(
                     chat_ml_sample=ChatMLSample(messages=messages),
                     max_new_tokens=request.max_new_tokens,
@@ -250,8 +254,16 @@ def higgs_tts_api_timestamps():
                     top_p=0.95,
                     top_k=50,
                     stop_strings=["<|end_of_text|>", "<|eot_id|>"],
-                    return_timestamps=True  # This triggers our tracking
+                    return_timestamps=True,  # This triggers our tracking
+                    input_text=request.text  # Pass the input text for timestamp extraction
                 )
+                
+                print(f"Output type: {type(output)}")
+                print(f"Has word_timings: {hasattr(output, 'word_timings')}")
+                if hasattr(output, 'word_timings'):
+                    print(f"Word timings: {output.word_timings}")
+                print(f"Generated text: '{output.generated_text if hasattr(output, 'generated_text') else 'N/A'}'")
+                print(f"Audio shape: {output.audio.shape if hasattr(output, 'audio') and hasattr(output.audio, 'shape') else 'N/A'}")
                 
                 # Extract timestamp data
                 word_timings = None
