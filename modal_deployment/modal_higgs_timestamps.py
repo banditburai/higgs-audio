@@ -268,6 +268,22 @@ def higgs_tts_api_timestamps():
                         }
                         for wt in output.word_timings
                     ]
+                    # If no valid word timings, try to generate from input text
+                    if not word_timings or (len(word_timings) == 1 and '<|' in word_timings[0]['word']):
+                        print(f"Regenerating word timings from input text: '{request.text}'")
+                        words = request.text.strip().split()
+                        if words:
+                            duration = len(output.audio) / output.sampling_rate * 1000
+                            ms_per_word = duration / len(words)
+                            word_timings = [
+                                {
+                                    "word": word,
+                                    "start_ms": int(i * ms_per_word),
+                                    "end_ms": int((i + 1) * ms_per_word),
+                                    "confidence": 0.7
+                                }
+                                for i, word in enumerate(words)
+                            ]
                 
                 if hasattr(output, 'segments') and output.segments:
                     segments = [

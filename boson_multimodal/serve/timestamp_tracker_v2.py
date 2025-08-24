@@ -63,35 +63,27 @@ class SimpleTimestampTracker:
         logger.info(f"Audio tokens shape: {audio_tokens.shape if audio_tokens is not None else 'None'}")
         logger.info(f"Audio duration: {audio_duration_ms}ms")
         
-        # Parse the text into words
+        # First, let's clean the text by removing special tokens
+        # Common special tokens in Higgs Audio
+        special_tokens = ['<|audio_out_bos|>', '<|AUDIO_OUT|>', '<|audio_eos|>', '<|eot_id|>', 
+                         '<|audio_in_bos|>', '<|AUDIO_IN|>', '<|audio_in_eos|>']
+        
+        clean_text = text
+        for token in special_tokens:
+            clean_text = clean_text.replace(token, '')
+        clean_text = clean_text.strip()
+        
+        # If no clean text, we might be looking at the wrong field
+        if not clean_text:
+            logger.warning(f"No clean text found after removing special tokens from: '{text}'")
+            # Return empty list - the actual text might be elsewhere
+            return []
+        
+        # Parse the clean text into words
         words = []
-        current_word = ""
-        word_token_ids = []
-        current_word_tokens = []
-        
-        # Decode each token to build words
-        for token_id in text_tokens:
-            token_str = self.tokenizer.decode([token_id])
-            
-            # Check if this starts a new word (has leading space or is punctuation)
-            if token_str.startswith(' ') or (current_word and token_str in '.,!?;:'):
-                if current_word:
-                    words.append({
-                        'word': current_word.strip(),
-                        'token_ids': current_word_tokens.copy()
-                    })
-                current_word = token_str.lstrip()
-                current_word_tokens = [token_id]
-            else:
-                current_word += token_str
-                current_word_tokens.append(token_id)
-        
-        # Add last word
-        if current_word:
-            words.append({
-                'word': current_word.strip(),
-                'token_ids': current_word_tokens
-            })
+        for word in clean_text.split():
+            if word.strip():
+                words.append({'word': word.strip(), 'token_ids': []})
         
         # Create word timings with even distribution
         # This is a simple approach - in production you might want more sophisticated alignment
