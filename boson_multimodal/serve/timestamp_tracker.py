@@ -354,7 +354,10 @@ def create_enhanced_engine_with_tracking(
     # Monkey-patch the model's generate method to use our tracker
     original_model_generate = engine.model.generate
     
-    def model_generate_with_tracking(*args, return_timestamps=False, **kwargs):
+    def model_generate_with_tracking(*args, **kwargs):
+        # Check if timestamps are being requested (set by engine wrapper)
+        return_timestamps = getattr(model_generate_with_tracking, 'enable_timestamps', False)
+        
         if return_timestamps:
             # Reset trackers
             generation_tracker.reset()
@@ -375,6 +378,8 @@ def create_enhanced_engine_with_tracking(
             finally:
                 # Clean up hooks
                 attention_tracker.remove_hooks()
+                # Reset flag
+                model_generate_with_tracking.enable_timestamps = False
         else:
             # Standard generation without tracking
             return original_model_generate(*args, **kwargs)
@@ -389,8 +394,12 @@ def create_enhanced_engine_with_tracking(
         kwargs_copy = kwargs.copy()
         kwargs_copy.pop('return_timestamps', None)
         
-        # Call original engine generate with return_timestamps passed to model
-        result = original_engine_generate(*args, **kwargs_copy, return_timestamps=return_timestamps)
+        # Signal to model wrapper that timestamps are requested
+        if return_timestamps:
+            model_generate_with_tracking.enable_timestamps = True
+        
+        # Call original engine generate (WITHOUT return_timestamps parameter)
+        result = original_engine_generate(*args, **kwargs_copy)
         
         # Extract timestamps if requested
         if return_timestamps and hasattr(result, 'audio') and result.audio is not None:
