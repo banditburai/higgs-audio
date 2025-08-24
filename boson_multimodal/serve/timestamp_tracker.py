@@ -90,16 +90,20 @@ class GenerationTimestampTracker(LogitsProcessor):
             # Audio tokens typically have IDs in a specific range
             is_audio_token = self._is_audio_token(next_token_id)
             
+            # Debug logging every 10 tokens to avoid spam
+            if self.current_position % 10 == 0:
+                logger.info(f"Position {self.current_position}: token_id={next_token_id}, is_audio={is_audio_token}")
+            
             if is_audio_token and not self.is_audio_phase:
                 # Mark transition to audio
                 self.is_audio_phase = True
                 self.audio_start_position = self.current_position
-                logger.debug(f"Transition to audio at position {self.current_position}")
+                logger.info(f"Transition to audio at position {self.current_position}, token_id={next_token_id}")
             elif not is_audio_token and self.is_audio_phase:
                 # Mark end of audio segment
                 self.is_audio_phase = False
                 self.audio_boundary_positions.append((self.audio_start_position, self.current_position))
-                logger.debug(f"Audio segment: positions {self.audio_start_position}-{self.current_position}")
+                logger.info(f"Audio segment end: positions {self.audio_start_position}-{self.current_position}")
             
             # Record the generation
             self.generations.append(TokenGeneration(
@@ -137,12 +141,26 @@ class GenerationTimestampTracker(LogitsProcessor):
             List of word timings with millisecond timestamps
         """
         with self.lock:
+            # Debug logging
+            logger.info(f"Getting word timings for text: '{text}', duration: {audio_duration_ms}ms")
+            logger.info(f"Total generations tracked: {len(self.generations)}")
+            
             # Separate text and audio generations
             text_gens = [g for g in self.generations if not g.is_audio]
             audio_gens = [g for g in self.generations if g.is_audio]
             
+            logger.info(f"Text generations: {len(text_gens)}, Audio generations: {len(audio_gens)}")
+            
+            # Log some sample tokens for debugging
+            if self.generations:
+                logger.info(f"Sample token IDs: {[g.token_id for g in self.generations[:10]]}")
+                logger.info(f"Sample is_audio flags: {[g.is_audio for g in self.generations[:10]]}")
+            
             if not text_gens or not audio_gens:
-                logger.warning("No text or audio generations tracked")
+                logger.warning(f"No text or audio generations tracked. Text: {len(text_gens)}, Audio: {len(audio_gens)}")
+                if self.generations:
+                    logger.warning(f"All token IDs: {[g.token_id for g in self.generations]}")
+                    logger.warning(f"All is_audio flags: {[g.is_audio for g in self.generations]}")
                 return []
             
             # Decode text tokens to get words
