@@ -74,7 +74,15 @@ class GenerationTimestampTracker(LogitsProcessor):
             self.start_time = time.time()
         
         # Get the token that's about to be selected (highest score)
-        next_token_id = scores.argmax(dim=-1).item()
+        # Handle batch dimension - take first sequence if batch size > 1
+        next_token_ids = scores.argmax(dim=-1)
+        if next_token_ids.dim() == 0:
+            # Single sequence
+            next_token_id = next_token_ids.item()
+        else:
+            # Batch - take first sequence
+            next_token_id = next_token_ids[0].item()
+            
         current_time = time.time() - self.start_time
         
         with self.lock:
