@@ -62,7 +62,8 @@ class WhisperAligner:
         audio: np.ndarray, 
         text: str, 
         sampling_rate: int = 24000,
-        chunk_size_words: int = 30  # Process in chunks of 30 words
+        chunk_size_words: int = 30,  # Process in chunks of 30 words
+        use_silence_detection: bool = True  # Use silence to find natural boundaries
     ) -> List[WordTiming]:
         """
         Perform forced alignment to get accurate word timestamps.
@@ -79,10 +80,10 @@ class WhisperAligner:
         """
         logger.info(f"Starting Whisper alignment for text: '{text[:50]}...'")
         
-        # If Whisper not available, use fallback
+        # If Whisper not available, fail explicitly
         if self.model is None:
-            logger.warning("Whisper not available, using simple fallback alignment")
-            return self._simple_alignment_fallback(text, len(audio) / sampling_rate * 1000)
+            logger.error("Whisper model not loaded")
+            raise RuntimeError("Whisper is required for alignment but is not available")
         
         # Prepare audio for Whisper
         audio_16k = self._prepare_audio_for_whisper(audio, sampling_rate)
@@ -93,67 +94,51 @@ class WhisperAligner:
         
         # If text is short enough, process all at once
         if len(words) <= chunk_size_words:
-            return self._process_single_chunk(audio_16k, text, total_duration_ms)
-        
-        # For long text, process in chunks
-        logger.info(f"Processing {len(words)} words in chunks of {chunk_size_words}")
-        all_word_timings = []
-        
-        # Calculate approximate duration per word for chunking audio
-        ms_per_word_estimate = total_duration_ms / len(words)
-        samples_per_word = int(ms_per_word_estimate * 16)  # 16 samples per ms at 16kHz
-        
-        for chunk_start in range(0, len(words), chunk_size_words):
-            chunk_end = min(chunk_start + chunk_size_words, len(words))
-            chunk_words = words[chunk_start:chunk_end]
-            chunk_text = ' '.join(chunk_words)
-            
-            # Extract corresponding audio chunk with some overlap
-            audio_start_sample = max(0, int(chunk_start * samples_per_word * 0.95))  # 5% overlap
-            audio_end_sample = min(len(audio_16k), int(chunk_end * samples_per_word * 1.05))  # 5% overlap
-            audio_chunk = audio_16k[audio_start_sample:audio_end_sample]
-            
-            # Calculate offset for this chunk
-            chunk_offset_ms = (audio_start_sample / 16000) * 1000
-            
-            logger.debug(f"Processing chunk {chunk_start//chunk_size_words + 1}: words {chunk_start}-{chunk_end}")
-            
-            # Process this chunk
-            chunk_timings = self._process_single_chunk(
-                audio_chunk, 
-                chunk_text,
-                (len(audio_chunk) / 16000) * 1000,
-                offset_ms=chunk_offset_ms
-            )
-            
-            # Check if chunk processing succeeded
-            if chunk_timings and len(chunk_timings) > 0:
-                # Verify the chunk matches expected words
-                chunk_match = self._verify_chunk_match(chunk_words, chunk_timings)
-                if chunk_match > 0.5:  # More than 50% match
-                    all_word_timings.extend(chunk_timings)
+            result = self._process_single_chunk(audio_16k, text, total_duration_ms)
+            if result and len(result) > 0:
+                match_ratio = self._verify_chunk_match(words, result)
+                if match_ratio > 0.5:
+                    logger.info(f"Whisper succeeded with {match_ratio:.1%} match")
+                    return result
                 else:
-                    # Fallback for this chunk
-                    logger.warning(f"Chunk {chunk_start//chunk_size_words + 1} failed, using fallback")
-                    chunk_duration = (audio_end_sample - audio_start_sample) / 16000 * 1000
-                    fallback_timings = self._simple_alignment_fallback(
-                        chunk_text, 
-                        chunk_duration,
-                        offset_ms=chunk_offset_ms
-                    )
-                    all_word_timings.extend(fallback_timings)
+                    logger.error(f"Whisper alignment failed - only {match_ratio:.1%} word match")
+                    raise ValueError(f"Whisper alignment failed with only {match_ratio:.1%} accuracy.")
             else:
-                # Use fallback for this chunk
-                chunk_duration = (audio_end_sample - audio_start_sample) / 16000 * 1000
-                fallback_timings = self._simple_alignment_fallback(
-                    chunk_text,
-                    chunk_duration, 
-                    offset_ms=chunk_offset_ms
-                )
-                all_word_timings.extend(fallback_timings)
+                logger.error("Whisper failed to extract any word timings")
+                raise ValueError("Whisper alignment failed. Check audio quality and text accuracy.")
         
-        logger.info(f"Completed alignment: {len(all_word_timings)} word timings extracted")
-        return all_word_timings
+        # For long text, try different strategies
+        logger.warning(f"Text has {len(words)} words, which may be challenging for Whisper")
+        
+        if use_silence_detection and len(words) > chunk_size_words:
+            # Try to use silence detection to find natural boundaries
+            logger.info("Attempting silence-based chunking for better accuracy")
+            segments = self._segment_audio_by_silence(audio_16k)
+            
+            if len(segments) > 1:
+                logger.info(f"Found {len(segments)} audio segments based on silence")
+                return self._process_with_silence_segments(segments, words, text)
+        
+        # Fall back to processing full audio
+        logger.info("Processing full audio with Whisper (no chunking)")
+        result = self._process_single_chunk(audio_16k, text, total_duration_ms)
+        
+        if result and len(result) > 0:
+            # Verify alignment quality
+            match_ratio = self._verify_chunk_match(words, result)
+            if match_ratio > 0.5:
+                logger.info(f"Whisper succeeded with {match_ratio:.1%} match")
+                return result
+            else:
+                logger.error(f"Whisper alignment failed - only {match_ratio:.1%} word match")
+                logger.error(f"Expected: {' '.join(words[:10])}...")
+                logger.error(f"Got: {' '.join([t.word for t in result[:10]])}...")
+                # Don't use fallback - fail explicitly
+                raise ValueError(f"Whisper alignment failed with only {match_ratio:.1%} accuracy. "
+                               f"Text may be too long or voice may be unclear.")
+        else:
+            logger.error("Whisper failed to extract any word timings")
+            raise ValueError("Whisper alignment failed completely. Text may be too long or audio quality issues.")
     
     def _prepare_audio_for_whisper(self, audio: np.ndarray, sampling_rate: int) -> np.ndarray:
         """Prepare audio for Whisper processing (float32, normalized, 16kHz)"""
@@ -219,9 +204,9 @@ class WhisperAligner:
             
             logger.debug(f"Chunk match ratio: {match_ratio:.2%}")
             
-            # If poor match, return empty to trigger fallback
+            # If poor match, return empty to indicate failure
             if match_ratio < 0.5:
-                logger.warning(f"Poor Whisper match ({match_ratio:.2%}), will use fallback")
+                logger.warning(f"Poor Whisper match ({match_ratio:.2%})")
                 return []
                 
             return word_timings
@@ -239,6 +224,95 @@ class WhisperAligner:
         matches = sum(1 for e, t in zip(expected_words, timing_words)
                      if e.lower().strip('.,!?;:') == t.lower().strip('.,!?;:'))
         return matches / len(expected_words) if expected_words else 0.0
+    
+    def _segment_audio_by_silence(self, audio_16k: np.ndarray, silence_thresh_db: float = -40, min_silence_ms: int = 500) -> List[Tuple[int, int, np.ndarray]]:
+        """
+        Segment audio by detecting silence gaps.
+        
+        Returns:
+            List of (start_sample, end_sample, audio_segment) tuples
+        """
+        import librosa
+        
+        # Convert to dB
+        audio_db = librosa.amplitude_to_db(np.abs(audio_16k), ref=np.max)
+        
+        # Find silent regions
+        silence_mask = audio_db < silence_thresh_db
+        min_silence_samples = int(min_silence_ms * 16)  # 16 samples per ms at 16kHz
+        
+        segments = []
+        in_silence = False
+        silence_start = 0
+        segment_start = 0
+        
+        for i in range(len(silence_mask)):
+            if silence_mask[i] and not in_silence:
+                # Start of silence
+                in_silence = True
+                silence_start = i
+            elif not silence_mask[i] and in_silence:
+                # End of silence
+                silence_duration = i - silence_start
+                if silence_duration >= min_silence_samples:
+                    # This is a significant silence gap - split here
+                    if silence_start > segment_start:
+                        segments.append((segment_start, silence_start, audio_16k[segment_start:silence_start]))
+                    segment_start = i
+                in_silence = False
+        
+        # Add final segment
+        if segment_start < len(audio_16k):
+            segments.append((segment_start, len(audio_16k), audio_16k[segment_start:]))
+        
+        return segments
+    
+    def _process_with_silence_segments(self, segments: List[Tuple[int, int, np.ndarray]], words: List[str], full_text: str) -> List[WordTiming]:
+        """
+        Process audio segments with Whisper, distributing words appropriately.
+        """
+        all_timings = []
+        words_per_segment = len(words) // len(segments)
+        word_index = 0
+        
+        for seg_idx, (start_sample, end_sample, audio_segment) in enumerate(segments):
+            # Calculate timing offset for this segment
+            offset_ms = (start_sample / 16000) * 1000
+            segment_duration_ms = (len(audio_segment) / 16000) * 1000
+            
+            # Estimate how many words should be in this segment
+            if seg_idx < len(segments) - 1:
+                segment_words = words[word_index:word_index + words_per_segment]
+            else:
+                # Last segment gets remaining words
+                segment_words = words[word_index:]
+            
+            segment_text = ' '.join(segment_words)
+            
+            logger.debug(f"Processing segment {seg_idx + 1}/{len(segments)}: {len(segment_words)} words")
+            
+            # Process this segment
+            segment_timings = self._process_single_chunk(
+                audio_segment,
+                segment_text,
+                segment_duration_ms,
+                offset_ms=offset_ms
+            )
+            
+            if segment_timings and len(segment_timings) > 0:
+                # Verify match
+                match_ratio = self._verify_chunk_match(segment_words, segment_timings)
+                if match_ratio > 0.5:
+                    all_timings.extend(segment_timings)
+                    word_index += len(segment_words)
+                else:
+                    logger.warning(f"Segment {seg_idx + 1} had poor match ({match_ratio:.1%})")
+                    # Still fail rather than fallback
+                    raise ValueError(f"Segment {seg_idx + 1} alignment failed with {match_ratio:.1%} accuracy")
+            else:
+                raise ValueError(f"Segment {seg_idx + 1} failed to produce any timings")
+        
+        return all_timings
     
     def _simple_alignment_fallback(
         self, 
