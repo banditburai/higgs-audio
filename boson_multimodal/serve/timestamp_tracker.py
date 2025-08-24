@@ -351,10 +351,10 @@ def create_enhanced_engine_with_tracking(
     
     attention_tracker = CrossAttentionTracker(engine.model)
     
-    # Monkey-patch the generate method to use our tracker
-    original_generate = engine.generate
+    # Monkey-patch the model's generate method to use our tracker
+    original_model_generate = engine.model.generate
     
-    def generate_with_tracking(*args, return_timestamps=False, **kwargs):
+    def model_generate_with_tracking(*args, return_timestamps=False, **kwargs):
         if return_timestamps:
             # Reset trackers
             generation_tracker.reset()
@@ -369,36 +369,49 @@ def create_enhanced_engine_with_tracking(
             kwargs['logits_processor'].append(generation_tracker)
             
             try:
-                # Run generation
-                result = original_generate(*args, **kwargs)
-                
-                # Extract timestamps
-                if hasattr(result, 'audio') and result.audio is not None:
-                    duration_ms = len(result.audio) / result.sampling_rate * 1000
-                    word_timings = generation_tracker.get_word_timings(
-                        result.generated_text, 
-                        duration_ms
-                    )
-                    
-                    # Add to result
-                    result.word_timings = word_timings
-                    result.alignment_method = "generation_tracking"
-                    
-                    # Also get attention alignment if available
-                    alignment = attention_tracker.get_alignment()
-                    if alignment is not None:
-                        result.attention_alignment = alignment
-                        logger.info(f"Captured attention alignment: {alignment.shape}")
-                
-                return result
+                # Run generation at model level
+                return original_model_generate(*args, **kwargs)
                 
             finally:
                 # Clean up hooks
                 attention_tracker.remove_hooks()
         else:
             # Standard generation without tracking
-            return original_generate(*args, **kwargs)
+            return original_model_generate(*args, **kwargs)
     
-    engine.generate = generate_with_tracking
+    engine.model.generate = model_generate_with_tracking
+    
+    # Monkey-patch the serve engine's generate method to handle timestamps
+    original_engine_generate = engine.generate
+    
+    def engine_generate_with_tracking(*args, return_timestamps=False, **kwargs):
+        # Extract return_timestamps from kwargs before passing to original
+        kwargs_copy = kwargs.copy()
+        kwargs_copy.pop('return_timestamps', None)
+        
+        # Call original engine generate with return_timestamps passed to model
+        result = original_engine_generate(*args, **kwargs_copy, return_timestamps=return_timestamps)
+        
+        # Extract timestamps if requested
+        if return_timestamps and hasattr(result, 'audio') and result.audio is not None:
+            duration_ms = len(result.audio) / result.sampling_rate * 1000
+            word_timings = generation_tracker.get_word_timings(
+                result.generated_text, 
+                duration_ms
+            )
+            
+            # Add to result
+            result.word_timings = word_timings
+            result.alignment_method = "generation_tracking"
+            
+            # Also get attention alignment if available
+            alignment = attention_tracker.get_alignment()
+            if alignment is not None:
+                result.attention_alignment = alignment
+                logger.info(f"Captured attention alignment: {alignment.shape}")
+        
+        return result
+    
+    engine.generate = engine_generate_with_tracking
     
     return engine, generation_tracker, attention_tracker
